@@ -1,34 +1,34 @@
 /*
-	Nano_WebRelay8.ino - Sketch for Arduino Nano with ATmega328 
-	implementation to control relays via HTTP requests.
-	Copyright (c) 2015 Iwan Zarembo <iwan@zarembo.de>
-	All rights reserved.
+  Nano_WebRelay8.ino - Sketch for Arduino Nano with ATmega328 
+  implementation to control relays via HTTP requests.
+  Copyright (c) 2015 Iwan Zarembo <iwan@zarembo.de>
+  All rights reserved.
 
-	It is free software: you can redistribute it and/or modify
-	it under the terms of the GNU General Public License as published by
-	the Free Software Foundation, either version 3 of the License, or
-	(at your option) any later version.
-	
-	This program is distributed in the hope that it will be useful,
-	but WITHOUT ANY WARRANTY; without even the implied warranty of
-	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-	GNU General Public License for more details.
-	
-	You should have received a copy of the GNU General Public License
-	along with this program.  If not, see <http://www.gnu.org/licenses/>.
-	
-	Dieses Programm ist Freie Software: Sie können es unter den Bedingungen
-	der GNU General Public License, wie von der Free Software Foundation,
-	Version 3 der Lizenz oder (nach Ihrer Wahl) jeder neueren
-	veröffentlichten Version, weiterverbreiten und/oder modifizieren.
-	
-	Dieses Programm wird in der Hoffnung, dass es nützlich sein wird, aber
-	OHNE JEDE GEWÄHRLEISTUNG, bereitgestellt; sogar ohne die implizite
-	Gewährleistung der MARKTFÄHIGKEIT oder EIGNUNG FÜR EINEN BESTIMMTEN ZWECK.
-	Siehe die GNU General Public License für weitere Details.
-	
-	Sie sollten eine Kopie der GNU General Public License zusammen mit diesem
-	Programm erhalten haben. Wenn nicht, siehe <http://www.gnu.org/licenses/>.
+  It is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+  
+  This program is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+  
+  You should have received a copy of the GNU General Public License
+  along with this program.  If not, see <http://www.gnu.org/licenses/>.
+  
+  Dieses Programm ist Freie Software: Sie können es unter den Bedingungen
+  der GNU General Public License, wie von der Free Software Foundation,
+  Version 3 der Lizenz oder (nach Ihrer Wahl) jeder neueren
+  veröffentlichten Version, weiterverbreiten und/oder modifizieren.
+  
+  Dieses Programm wird in der Hoffnung, dass es nützlich sein wird, aber
+  OHNE JEDE GEWÄHRLEISTUNG, bereitgestellt; sogar ohne die implizite
+  Gewährleistung der MARKTFÄHIGKEIT oder EIGNUNG FÜR EINEN BESTIMMTEN ZWECK.
+  Siehe die GNU General Public License für weitere Details.
+  
+  Sie sollten eine Kopie der GNU General Public License zusammen mit diesem
+  Programm erhalten haben. Wenn nicht, siehe <http://www.gnu.org/licenses/>.
   */
 
 /**
@@ -93,36 +93,54 @@
 
 // the debug flag during development
 // Un-comment to enable debugging statements
-//#define DEBUGGING
+#define DEBUGGING
 
 // Un-comment if you want the application to return the OpenHab JSON string
 // e.g. {"r":["OFF","OFF","OFF","OFF","OFF","OFF","OFF","OFF"]} and not the 
 // minified one
 //#define OPENHAB
 
+#include <EEPROM.h>
+// EEPROM Initialization
+// The aim is to write the last known status of the relays on the eeprom so that
+// the system can be relialabe to a power supply outage
+
+//uncomment for put 0 in eeprom
+//#define EEINIT
+
+int eeAddress = 0; //EEPROM address to start reading from ** for the next release will be implemented a better eeprom location management **
+int relStatus;
+
+
+
 // Un-comment if you want to use DHCP
-//#define DHCP
+#define DHCP
 
 #include <Arduino.h>
 #include <UIPEthernet.h>
 
 #ifdef DEBUGGING
-	#include <MemoryFree.h>
+  #include <MemoryFree.h>
 #endif
 
 /*** The configuration of the application ***/
 // Change the configuration for your needs
 const uint8_t mac[6] = { 0x00,0x01,0x02,0x03,0x04,0x05 };
 #ifndef DHCP
-	const IPAddress myIP(192, 168, 178, 21);
+  const IPAddress myIP(192, 168, 1, 80);
 #endif
 
-// Number of relays on board, max 9 are supported!
+// Number of relays on board. Should be left untaouched to be managed by single byte eeprom storage
 const int numRelays = 8;
 // Output ports for relays, change it if you connected other pins, must be adjusted if number of relays changed
 const int outputPorts[] = { 2, 3, 4, 5, 6, 7, 8, 9 }; 
 // this is for performance, must be adjusted if number of relays changed
 boolean portStatus[] = { false, false, false, false, false, false, false, false };
+
+
+
+
+
 
 /****** a little bit of security *****/
 // max request size, arduino cannot handle big requests so set the max you really plan to process
@@ -161,12 +179,12 @@ const char NL = '\n';
 const char CR = '\r';
 
 #ifdef OPENHAB
-	// JSON string start
-	const char JSS = '"';
-	
-	// open hab states
-	const char* OH_ON = "ON";
-	const char* OH_OFF = "OFF";
+  // JSON string start
+  const char JSS = '"';
+  
+  // open hab states
+  const char* OH_ON = "ON";
+  const char* OH_OFF = "OFF";
 #endif
 
 // response of relay status, json start
@@ -187,135 +205,167 @@ const char* HD_END = " \nContent-Type: application/json\nConnection: close\n\n";
 // start the server on port 80
 EthernetServer server = EthernetServer(80);
 
-void setup() {
-	#ifdef DEBUGGING
-		Serial.begin(115200);
-	#endif
-	// all pins will be turned off
-	for (int i = 0; i < numRelays; i = i + 1) {
-		pinMode(outputPorts[i], OUTPUT);    
-		digitalWrite(outputPorts[i], HIGH); 
-	}
 
-	// use DHCP to get an IP, set it in your Router or use a hard coded IP
-	#ifdef DHCP
-		Ethernet.begin(mac);
-	#endif
-	#ifndef DHCP
-		Ethernet.begin(mac, myIP);
-	#endif
-	#ifdef DEBUGGING
-		Serial.print("localIP: ");
-		Serial.println(Ethernet.localIP());
-		#ifdef DHCP
-			Serial.print("subnetMask: ");
-			Serial.println(Ethernet.subnetMask());
-			Serial.print("gatewayIP: ");
-			Serial.println(Ethernet.gatewayIP());
-			Serial.print("dnsServerIP: ");
-			Serial.println(Ethernet.dnsServerIP());
-		#endif
-	#endif
-	server.begin();
+
+
+void setup() {
+  #ifdef DEBUGGING
+    Serial.begin(57600);
+  #endif
+
+ // read the value stored in the EEPROM
+   EEPROM.get(eeAddress, relStatus);
+   Serial.print("relStatus: ");
+   Serial.print(relStatus);
+   Serial.println();
+    Serial.print(bitRead(relStatus, 0)); //bit meno significativo
+    Serial.print(bitRead(relStatus, 1));
+    Serial.print(bitRead(relStatus, 2));
+    Serial.print(bitRead(relStatus, 3));
+    Serial.print(bitRead(relStatus, 4));
+    Serial.print(bitRead(relStatus, 5));
+    Serial.print(bitRead(relStatus, 6));
+    Serial.print(bitRead(relStatus, 7)); //bit più significativo
+    Serial.println();
+   
+  #ifdef EEINIT  //if enabled it will put the eeprom location to 0 -> all relays off
+    EEPROM.put(eeAddress,1);
+  #endif
+  
+  
+  
+  // all pins will be turned off
+//  for (int i = 0; i < numRelays; i = i + 1) {
+//    pinMode(outputPorts[i], OUTPUT);    
+//    digitalWrite(outputPorts[i], HIGH); 
+
+  // all pins will be turned at the previous state
+  for (int i = 0; i < numRelays; i = i + 1) {
+    pinMode(outputPorts[i], OUTPUT);    
+    digitalWrite(outputPorts[i], (bitRead(relStatus, i) ? HIGH:LOW)); 
+
+    
+  }
+
+  // use DHCP to get an IP, set it in your Router or use a hard coded IP
+  #ifdef DHCP
+    Ethernet.begin(mac);
+  #endif
+  #ifndef DHCP
+    Ethernet.begin(mac, myIP);
+  #endif
+  #ifdef DEBUGGING
+    Serial.print("localIP: ");
+    Serial.println(Ethernet.localIP());
+    #ifdef DHCP
+      Serial.print("subnetMask: ");
+      Serial.println(Ethernet.subnetMask());
+      Serial.print("gatewayIP: ");
+      Serial.println(Ethernet.gatewayIP());
+      Serial.print("dnsServerIP: ");
+      Serial.println(Ethernet.dnsServerIP());
+    #endif
+  #endif
+  server.begin();
 }
 
 
 void loop() {
-	size_t size;
-	if (EthernetClient client = server.available()) {
-		if (client) {
-			if((size = client.available()) > 0) {
-				#ifdef DEBUGGING
-					Serial.print("Mem bef: "); Serial.println(freeMemory());
-				#endif
-				// check the the data is not too big
-				if(size > maxSize) {
-					returnHeader(client, RC_ERR);
-					returnErr(client, 1);
-				} else {
-					// read all data from the client
-					uint8_t* msgConv = (uint8_t*) malloc(size+1);
-					size = client.read(msgConv, size);
-					char* msg = (char*) msgConv;
-					// set the string terminator
-					*(msg+size) = 0;
-					
-					#ifdef DEBUGGING
-						Serial.write(msgConv, size);
-						Serial.print("\nSize is: "); Serial.println(size);
-					#endif
-	
-					// check the HTTP option used by client
-					if(strncmp((char*)msg, GET, 3) == 0) {
-						char *data = getGetData(msg, 4);
-						#ifdef DEBUGGING
-							Serial.print("GET req\nData:"); Serial.println(data);
-						#endif
-						
-						returnHeader(client, RC_OK);
-						// check if the client wants to know the application version.
-						if(strcmp(data, REQ_ABOUT) == 0) {
-							client.println(VERSION);
-						} else {
-							// return the status of all relays
-							printRelayStatus(client);
-						}
-					} else if(strncmp(msg, POST, 4) == 0) {
-						#ifdef DEBUGGING
-							Serial.println("POST req");
-						#endif
-						
-						//extract the post data from the client message
-						char *lnl = NULL; // last line
-						char *src = msg-1; // first call begins with address msg
-						char *end = msg+size; // the end of the message
-						
-						// the data in openhab is usually send as a query string
-						// the first line must look like: POST /?0=2 HTTP/1.1
-						// the question mark is at char 6
-						if(msg[6] == '?') {
-							// ok, now search for the next space, which ends the query string
-							char * spaceLocation = (char*) memchr(src+7, ' ', end-src);
-							if (spaceLocation!=NULL) {
-								int pos = spaceLocation-src;
-								#ifdef DEBUGGING
-									Serial.print("Cal pos: "); Serial.println(pos);
-								#endif
-								end = src+pos;
-								src[pos] = 0;
-								lnl = src+7;
-							} else {
-								returnHeader(client, RC_ERR);
-								returnErr(client, 6);
-							}
-						} else {
-							do {
-								lnl = src;
-								// read to the end of the next line, but max to the end of the msg.
-								src = (char*) memchr(src+1, '\n', end-src);
-								#ifdef DEBUGGING
-									Serial.print("Msg left:'"); Serial.print(src); Serial.println("'");
-								#endif
-							}while(src);
-						}
-						// +1 is to remove the line break before.
-						changeRelayStatus(client, lnl+1, end);
-					} else {
-						// return an error, because only POST and GET are supported
-						returnHeader(client, RC_ERR);
-						returnErr(client, 2);
-					}
-					free(msg);
-				} // end if size > maxSize
-			} // end if size > 0
-		} // end if client
-		// required for the loop timing
-		delay(2);
-		client.stop();
-		#ifdef DEBUGGING
-			Serial.print("Memory after processing: "); Serial.println(freeMemory());
-		#endif
-	} // end if server available
+  size_t size;
+  if (EthernetClient client = server.available()) {
+    if (client) {
+      if((size = client.available()) > 0) {
+        #ifdef DEBUGGING
+          Serial.print("Mem bef: "); Serial.println(freeMemory());
+        #endif
+        // check the the data is not too big
+        if(size > maxSize) {
+          returnHeader(client, RC_ERR);
+          returnErr(client, 1);
+        } else {
+          // read all data from the client
+          uint8_t* msgConv = (uint8_t*) malloc(size+1);
+          size = client.read(msgConv, size);
+          char* msg = (char*) msgConv;
+          // set the string terminator
+          *(msg+size) = 0;
+          
+          #ifdef DEBUGGING
+            Serial.write(msgConv, size);
+            Serial.print("\nSize is: "); Serial.println(size);
+          #endif
+  
+          // check the HTTP option used by client
+          if(strncmp((char*)msg, GET, 3) == 0) {
+            char *data = getGetData(msg, 4);
+            #ifdef DEBUGGING
+              Serial.print("GET req\nData:"); Serial.println(data);
+            #endif
+            
+            returnHeader(client, RC_OK);
+            // check if the client wants to know the application version.
+            if(strcmp(data, REQ_ABOUT) == 0) {
+              client.println(VERSION);
+            } else {
+              // return the status of all relays
+              printRelayStatus(client);
+            }
+          } else if(strncmp(msg, POST, 4) == 0) {
+            #ifdef DEBUGGING
+              Serial.println("POST req");
+            #endif
+            
+            //extract the post data from the client message
+            char *lnl = NULL; // last line
+            char *src = msg-1; // first call begins with address msg
+            char *end = msg+size; // the end of the message
+            
+            // the data in openhab is usually send as a query string
+            // the first line must look like: POST /?0=2 HTTP/1.1
+            // the question mark is at char 6
+            if(msg[6] == '?') {
+              // ok, now search for the next space, which ends the query string
+              char * spaceLocation = (char*) memchr(src+7, ' ', end-src);
+              if (spaceLocation!=NULL) {
+                int pos = spaceLocation-src;
+                #ifdef DEBUGGING
+                  Serial.print("Cal pos: "); Serial.println(pos);
+                #endif
+                end = src+pos;
+                src[pos] = 0;
+                lnl = src+7;
+              } else {
+                returnHeader(client, RC_ERR);
+                returnErr(client, 6);
+              }
+            } else {
+              do {
+                lnl = src;
+                // read to the end of the next line, but max to the end of the msg.
+                src = (char*) memchr(src+1, '\n', end-src);
+                #ifdef DEBUGGING
+                  Serial.print("Msg left:'"); Serial.print(src); Serial.println("'");
+                #endif
+              }while(src);
+            }
+            // +1 is to remove the line break before.
+            changeRelayStatus(client, lnl+1, end);
+          } else {
+            // return an error, because only POST and GET are supported
+            returnHeader(client, RC_ERR);
+            returnErr(client, 2);
+          }
+          free(msg);
+        } // end if size > maxSize
+      } // end if size > 0
+    } // end if client
+    // required for the loop timing
+    delay(2);
+    client.stop();
+    #ifdef DEBUGGING
+      Serial.print("Memory after processing: "); Serial.println(freeMemory());
+    #endif
+  } // end if server available
 }
 
 /**
@@ -326,7 +376,7 @@ char *getGetData(char *charArr, int start) {
     char* beg = charArr+start;
     char* end = (char*)memchr(beg, ' ', 10);
     if(end)
-	    *end = 0;
+      *end = 0;
     return beg;
 }
 
@@ -338,120 +388,120 @@ char *getGetData(char *charArr, int start) {
  *   -> 1 turns the relay on
  *   -> 2 changes the status of the relay. So a turned off relay would be switched on and the other way around.
  * The result of this method can be:
- * 	1. A HTTP 500 error if something went wrong processing the command.
- * 	2. A JSON String as you would get when sending a simple GET request.
+ *  1. A HTTP 500 error if something went wrong processing the command.
+ *  2. A JSON String as you would get when sending a simple GET request.
  */
 void changeRelayStatus(EthernetClient &client, char *command, char *msgEnd) {
-	#ifdef DEBUGGING
-		Serial.print("data: '"); Serial.print(command); Serial.println("'");
-	#endif
-	
-	// check the length of the whole command
-  	int length = msgEnd - command;
-  	#ifdef DEBUGGING
-  		Serial.print("len:"); Serial.println(length);
-  		Serial.print("cmd after null:"); Serial.println(command);
-  	#endif
-  	if(length < 3) {
-  		returnHeader(client, RC_ERR);
-		returnErr(client, 3);
-	  	return;
-  	}
+  #ifdef DEBUGGING
+    Serial.print("data: '"); Serial.print(command); Serial.println("'");
+  #endif
+  
+  // check the length of the whole command
+    int length = msgEnd - command;
+    #ifdef DEBUGGING
+      Serial.print("len:"); Serial.println(length);
+      Serial.print("cmd after null:"); Serial.println(command);
+    #endif
+    if(length < 3) {
+      returnHeader(client, RC_ERR);
+    returnErr(client, 3);
+      return;
+    }
 
-  	// extract the post data from the client message
-	char *lastSrc = NULL; // what is left from the command
-	char *src = command; // first call starts with address of the command
+    // extract the post data from the client message
+  char *lastSrc = NULL; // what is left from the command
+  char *src = command; // first call starts with address of the command
 
-	do {
-		int srcNum = msgEnd-src;
-		lastSrc = src;
-		// read to the end of the next line, but max to the end of the msg.
-		src = (char*) memchr(src+1, TOK_EQU, srcNum);
-		if(!src) {
-			// if there is no = char in the command left, then something is wrong!
-			returnHeader(client, RC_ERR);
-			returnErr(client, 6);
-		  	return;
-		}
-		int relLen = src - lastSrc;
-		// check the lenght of the relay number
-		if( !(relLen <= RCL) ) {
-  			returnHeader(client, RC_ERR);
-			returnErr(client, 4);
-		  	return;
-  		}
-  		// convert the value into a number
-  		char* relNumChar;
-  		memcpy(relNumChar, lastSrc, relLen);
-  		int relNum = atoi( relNumChar );
-  		#ifdef DEBUGGING
-  			Serial.print("rel#:"); Serial.println(relNum);
-  		#endif
-  		// check if the relay number is in valid range
-  		if( !(relNum < numRelays && relNum >= 0) ) {
-  			// error stop processing!!!
-			returnHeader(client, RC_ERR);
-			returnErr(client, 4);
-			return;
-  		}
-  		
-  		// reassign last search and remove the = char
-  		lastSrc = src + 1;
-  		// search for the next & sign and convert the value
-  		// -1 to remove the last finding
-  		srcNum = msgEnd-src-1;
-  		src = (char*) memchr(src+2, TOK_AND, srcNum);
-  		// if there is no & then it means the command left is the status for the relay.
-  		int statLen = src ? (src - lastSrc) : srcNum;
-		// check the lenght of the relay number
-		if( statLen != 1 ) {
-  			returnHeader(client, RC_ERR);
-			returnErr(client, 5);
-		  	return;
-  		}
-  		
-  		// convert the status;
-		char* statChar;
-  		memcpy(statChar, lastSrc, statLen);
-  		int stat = atoi( statChar );
-  		#ifdef DEBUGGING
-  			Serial.print("Status:"); Serial.println(stat);
-  		#endif
-  		
-  		// Only change the status if it has the correct value
-  		switch(stat) {
-  			case R_ON:
-  				// only turn something of if it is turn on, otherwise ignore it.
-				if(portStatus[relNum] != true) {
-					// turn it off
-					digitalWrite(outputPorts[relNum], LOW);
-					portStatus[relNum] = true;
-				}
-  				break;
-  			case R_OFF:
-  				// only turn something of if it is turn on, otherwise ignore it.
-				if(portStatus[relNum] != false) {
-					// turn it off
-					digitalWrite(outputPorts[relNum], HIGH);
-					portStatus[relNum] = false;
-				}
-  				break;
-  			case R_INV:
-				digitalWrite(outputPorts[relNum], !portStatus[relNum] ? LOW : HIGH);
-				portStatus[relNum] = !portStatus[relNum];
-  				break;
-  			default:
-	  			// error stop processing!!!
-				returnHeader(client, RC_ERR);
-				returnErr(client, 5);
-				return;
-  		}
-  		
-  		
-	} while(src);
-	returnHeader(client, RC_OK);
-  	// return the final status of all relays
-	printRelayStatus(client);
+  do {
+    int srcNum = msgEnd-src;
+    lastSrc = src;
+    // read to the end of the next line, but max to the end of the msg.
+    src = (char*) memchr(src+1, TOK_EQU, srcNum);
+    if(!src) {
+      // if there is no = char in the command left, then something is wrong!
+      returnHeader(client, RC_ERR);
+      returnErr(client, 6);
+        return;
+    }
+    int relLen = src - lastSrc;
+    // check the lenght of the relay number
+    if( !(relLen <= RCL) ) {
+        returnHeader(client, RC_ERR);
+      returnErr(client, 4);
+        return;
+      }
+      // convert the value into a number
+      char* relNumChar;
+      memcpy(relNumChar, lastSrc, relLen);
+      int relNum = atoi( relNumChar );
+      #ifdef DEBUGGING
+        Serial.print("rel#:"); Serial.println(relNum);
+      #endif
+      // check if the relay number is in valid range
+      if( !(relNum < numRelays && relNum >= 0) ) {
+        // error stop processing!!!
+      returnHeader(client, RC_ERR);
+      returnErr(client, 4);
+      return;
+      }
+      
+      // reassign last search and remove the = char
+      lastSrc = src + 1;
+      // search for the next & sign and convert the value
+      // -1 to remove the last finding
+      srcNum = msgEnd-src-1;
+      src = (char*) memchr(src+2, TOK_AND, srcNum);
+      // if there is no & then it means the command left is the status for the relay.
+      int statLen = src ? (src - lastSrc) : srcNum;
+    // check the lenght of the relay number
+    if( statLen != 1 ) {
+        returnHeader(client, RC_ERR);
+      returnErr(client, 5);
+        return;
+      }
+      
+      // convert the status;
+    char* statChar;
+      memcpy(statChar, lastSrc, statLen);
+      int stat = atoi( statChar );
+      #ifdef DEBUGGING
+        Serial.print("Status:"); Serial.println(stat);
+      #endif
+      
+      // Only change the status if it has the correct value
+      switch(stat) {
+        case R_ON:
+          // only turn something of if it is turn on, otherwise ignore it.
+        if(portStatus[relNum] != true) {
+          // turn it off
+          digitalWrite(outputPorts[relNum], LOW);
+          portStatus[relNum] = true;
+        }
+          break;
+        case R_OFF:
+          // only turn something of if it is turn on, otherwise ignore it.
+        if(portStatus[relNum] != false) {
+          // turn it off
+          digitalWrite(outputPorts[relNum], HIGH);
+          portStatus[relNum] = false;
+        }
+          break;
+        case R_INV:
+        digitalWrite(outputPorts[relNum], !portStatus[relNum] ? LOW : HIGH);
+        portStatus[relNum] = !portStatus[relNum];
+          break;
+        default:
+          // error stop processing!!!
+        returnHeader(client, RC_ERR);
+        returnErr(client, 5);
+        return;
+      }
+      
+      
+  } while(src);
+  returnHeader(client, RC_OK);
+    // return the final status of all relays
+  printRelayStatus(client);
 }
 
 /**
@@ -460,42 +510,42 @@ void changeRelayStatus(EthernetClient &client, char *command, char *msgEnd) {
  * This one means all releays are turned off.
  */
 void printRelayStatus(EthernetClient &client) {
-	client.print(RS_START);
-	int lastRelay = numRelays-1;
-	for (int i = 0; i < numRelays; i++) {
-		#ifdef OPENHAB
-			client.print(JSS);
-			client.print(portStatus[i] ? OH_ON : OH_OFF);
-			client.print(JSS);
-		#endif
-		#ifndef OPENHAB
-			client.print(portStatus[i]);
-		#endif
-		if(i < lastRelay) {
-			client.print(RS_SEP);
-		}
-	}
-	client.println(RS_END);
+  client.print(RS_START);
+  int lastRelay = numRelays-1;
+  for (int i = 0; i < numRelays; i++) {
+    #ifdef OPENHAB
+      client.print(JSS);
+      client.print(portStatus[i] ? OH_ON : OH_OFF);
+      client.print(JSS);
+    #endif
+    #ifndef OPENHAB
+      client.print(portStatus[i]);
+    #endif
+    if(i < lastRelay) {
+      client.print(RS_SEP);
+    }
+  }
+  client.println(RS_END);
 }
 
 /**
  * Returns a message to the client.
  */
 void returnErr(EthernetClient &client, int rc) {
-	#ifdef DEBUGGING
-		Serial.print("Returning error: ");
-		Serial.println(rc);
-	#endif
-	client.print(RS_ERR_START);
-	client.print(rc);
-	client.println(RS_ERR_END);
+  #ifdef DEBUGGING
+    Serial.print("Returning error: ");
+    Serial.println(rc);
+  #endif
+  client.print(RS_ERR_START);
+  client.print(rc);
+  client.println(RS_ERR_END);
 }
 
 /**
  * Returns a header with the given http code to the client.
  */
 void returnHeader(EthernetClient &client, int httpCode) {
-	client.print(HD_START);
-	client.print(httpCode);
-	client.print(HD_END);
+  client.print(HD_START);
+  client.print(httpCode);
+  client.print(HD_END);
 }
